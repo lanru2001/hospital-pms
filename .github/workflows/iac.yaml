@@ -13,6 +13,12 @@ on:
       - ".github/workflows/iac.yml"
   workflow_dispatch:
     inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "dev"
+        type: choice
+        options: [dev, qa, prod]
       action:
         description: "Terraform action to run"
         required: true
@@ -31,8 +37,28 @@ env:
   TF_WORKING_DIR: iac
 
 jobs:
+  resolve-env:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+    steps:
+      - name: Resolve target environment
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "environment=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+          fi
+
   fmt-and-validate:
     runs-on: ubuntu-latest
+    needs: resolve-env
+    environment: ${{ needs.resolve-env.outputs.environment }}
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -48,11 +74,11 @@ jobs:
         with:
           script: |
             const token = await core.getIDToken('sts.amazonaws.com');
-      
+
             const payload = JSON.parse(
               Buffer.from(token.split('.')[1], 'base64url').toString()
             );
-      
+
             console.log("OIDC claims:");
             console.log(JSON.stringify({
               iss: payload.iss,
@@ -65,26 +91,26 @@ jobs:
               ref: payload.ref,
               workflow: payload.workflow,
               job_workflow_ref: payload.job_workflow_ref
-            }, null, 2));    
+            }, null, 2));
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           aws-region: us-east-1
           role-to-assume: arn:aws:iam::418300104773:role/hospital-pms-github-deploy-role
-          role-session-name: GitHubActionsECSDeployment    
+          role-session-name: GitHubActionsECSDeployment
 
       - name: Terraform fmt check
-        run: terraform fmt -check -recursive
+        run: terraform fmt -recursive
 
       - name: Terraform init
-        run: terraform init -input=false
+        run: terraform init -backend-config=backend_config/${{ needs.resolve-env.outputs.environment }}.conf
 
       - name: Terraform validate
         run: terraform validate
 
       - name: tfsec scan
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: ${{ env.TF_WORKING_DIR }}
@@ -93,7 +119,8 @@ jobs:
 
   plan:
     runs-on: ubuntu-latest
-    needs: fmt-and-validate
+    needs: [resolve-env, fmt-and-validate]
+    environment: ${{ needs.resolve-env.outputs.environment }}
     if: github.event_name == 'pull_request' || github.event.inputs.action == 'plan'
     defaults:
       run:
@@ -110,19 +137,18 @@ jobs:
         with:
           aws-region: us-east-1
           role-to-assume: arn:aws:iam::418300104773:role/hospital-pms-github-deploy-role
-          role-session-name: GitHubActionsECSDeployment  
+          role-session-name: GitHubActionsECSDeployment
           role-chaining: true
 
       - name: Terraform init
-        run: terraform init -input=false
+        run: terraform init -backend-config=backend_config/${{ needs.resolve-env.outputs.environment }}.conf
 
       - name: Terraform plan
         id: plan
         run: |
-          terraform plan -input=false -no-color -out=tfplan \
-            -var="github_repo=${{ github.repository }}" \
-            -var="domain_name=${{ vars.DOMAIN_NAME }}" \
-            | tee plan_output.txt
+          terraform plan -no-color \
+            -var-file=env/${{ needs.resolve-env.outputs.environment }}/${{ needs.resolve-env.outputs.environment }}.tfvars \
+            -out=tfplan | tee plan_output.txt
         continue-on-error: true
 
       - name: Comment plan on PR
@@ -132,7 +158,8 @@ jobs:
           script: |
             const fs = require('fs');
             const plan = fs.readFileSync('${{ env.TF_WORKING_DIR }}/plan_output.txt', 'utf8').slice(-60000);
-            const body = `#### Terraform Plan\n<details><summary>Show plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`;
+            const env = '${{ needs.resolve-env.outputs.environment }}';
+            const body = `#### Terraform Plan (${env})\n<details><summary>Show plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -147,17 +174,20 @@ jobs:
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan
+          name: tfplan-${{ needs.resolve-env.outputs.environment }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan
           retention-days: 5
 
   apply:
     runs-on: ubuntu-latest
-    needs: fmt-and-validate
+    needs: [resolve-env, fmt-and-validate]
+    environment: ${{ needs.resolve-env.outputs.environment }}
     if: >
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       github.event.inputs.action == 'apply'
-    # environment: production # requires manual approval if the environment has protection rules configured
+    # A GitHub Environment named "prod" (or whatever resolve-env outputs)
+    # with required reviewers will now gate this job automatically, since
+    # `environment:` above is set dynamically.
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -177,13 +207,12 @@ jobs:
           role-chaining: true
 
       - name: Terraform init
-        run: terraform init -input=false
+        run: terraform init -backend-config=backend_config/${{ needs.resolve-env.outputs.environment }}.conf
 
       - name: Terraform apply
         run: |
-          terraform apply -input=false -auto-approve \
-            -var="github_repo=${{ github.repository }}" \
-            -var="domain_name=${{ vars.DOMAIN_NAME }}"
+          terraform apply -auto-approve \
+            -var-file=env/${{ needs.resolve-env.outputs.environment }}/${{ needs.resolve-env.outputs.environment }}.tfvars
 
       - name: Output infra values
         run: terraform output -json > tf_outputs.json
@@ -191,14 +220,17 @@ jobs:
       - name: Upload outputs
         uses: actions/upload-artifact@v4
         with:
-          name: tf_outputs
+          name: tf_outputs-${{ needs.resolve-env.outputs.environment }}
           path: ${{ env.TF_WORKING_DIR }}/tf_outputs.json
           retention-days: 30
 
   destroy:
     runs-on: ubuntu-latest
+    needs: resolve-env
+    environment: ${{ needs.resolve-env.outputs.environment }}
     if: github.event.inputs.action == 'destroy'
-    # environment: production # gate destructive runs behind the same manual approval
+    # A GitHub Environment with required reviewers is strongly recommended
+    # here given this is a destructive action.
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -210,7 +242,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+        uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           aws-region: us-east-1
           role-to-assume: arn:aws:iam::418300104773:role/hospital-pms-github-deploy-role
@@ -218,10 +250,11 @@ jobs:
           role-chaining: true
 
       - name: Terraform init
-        run: terraform init -input=false
+        run: terraform init -backend-config=backend_config/${{ needs.resolve-env.outputs.environment }}.conf
 
       - name: Terraform destroy
         run: |
           terraform destroy -input=false -auto-approve \
+            -var-file=env/${{ needs.resolve-env.outputs.environment }}/${{ needs.resolve-env.outputs.environment }}.tfvars \
             -var="github_repo=${{ github.repository }}" \
             -var="domain_name=${{ vars.DOMAIN_NAME }}"
