@@ -1,76 +1,69 @@
 variable "aws_region" {
   type    = string
-  default = "us-east-1"
+  default = ""
 }
 
 variable "environment" {
   type    = string
-  default = "production"
+  default = ""
 }
 
 variable "project" {
   type    = string
-  default = "hospital-pms"
+  default = ""
 }
 
 variable "vpc_cidr" {
   type    = string
-  default = "10.20.0.0/16"
+  default = ""
 }
 
 variable "az_count" {
-  type    = number
-  default = 2
+  type = number
 }
 
 variable "container_port" {
-  type    = number
-  default = 8000
+  type = number
 }
 
 variable "ecs_task_cpu" {
-  type    = number
-  default = 512
+  type = number
 }
 
 variable "ecs_task_memory" {
-  type    = number
-  default = 1024
+  type = number
 }
 
 variable "ecs_desired_count" {
-  type    = number
-  default = 2
+  type = number
 }
 
 variable "ecs_min_count" {
-  type    = number
-  default = 2
+  type = number
 }
 
 variable "ecs_max_count" {
-  type    = number
-  default = 8
+  type = number
+
 }
 
 variable "db_instance_class" {
   type    = string
-  default = "db.t3.medium"
+  default = ""
 }
 
 variable "db_allocated_storage" {
-  type    = number
-  default = 50
+  type = number
 }
 
 variable "db_name" {
   type    = string
-  default = "hospital_pms"
+  default = ""
 }
 
 variable "db_username" {
   type    = string
-  default = "pms_admin"
+  default = ""
 }
 
 variable "domain_name" {
