@@ -1,0 +1,17 @@
+aws_region           = "us-east-1"
+environment          = "production"
+project              = "hospital-pms"
+vpc_cidr             = "10.20.0.0/16"
+az_count             = 2
+container_port       = 8000
+ecs_task_cpu         = 512
+ecs_task_memory      = 1024
+ecs_desired_count    = 2
+ecs_min_count        = 2
+ecs_max_count        = 8
+db_instance_class    = "db.t3.medium"
+db_allocated_storage = 50
+db_name              = "hospital_pms"
+db_username          = "pms_admin"
+domain_name          = "api.dev.crownworlddental.com" # used for ACM cert + Route53"
+route53_zone_id      = "Z1DZWHRWIIIM0P"               # Hosted zone ID
